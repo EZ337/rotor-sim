@@ -71,6 +71,7 @@ private:
         std::uniform_int_distribution<int> rack_dist(0, config.num_racks - 1);
         int intermediate = -1;
         
+        // TODO: Need to verify logic against RotorNet paper
         // Use VLB for skewed traffic or when configured
         // For simplicity: always use VLB for low-latency, probabilistic for bulk
         if (flow.type == FlowType::LOW_LATENCY) {
@@ -136,10 +137,13 @@ private:
         }
     }
     
+    // TODO: Needs overhaul to support RotorLB: (1 vs 2 hop. We currently hold bulk flows)
+    // until we have a direct connection. This is NOT like RotorNet
     void startTransmission(int rack_id) {
         // Find a VOQ with packets that has a direct path available now
         std::vector<int> nonempty_dests = rack_voqs.at(rack_id).getNonemptyDestinations();
         
+        // TODO: Evaluate later: Should possibly still transmission completion event
         if (nonempty_dests.empty()) {
             rack_busy[rack_id] = false;
             return;
@@ -149,9 +153,11 @@ private:
         
         // Try to find a destination with direct path
         int selected_dest = -1;
-        uint64_t packet_id = 0;
+        uint64_t packet_id = 0; // Updated in dequeue call
         
+        // for queues with data
         for (int dest : nonempty_dests) {
+            // if we have a connection (there's only one connection per per cycle generally)
             if (topology.hasDirectPath(rack_id, dest, current_time_us)) {
                 if (rack_voqs.at(rack_id).dequeue(dest, packet_id)) {
                     selected_dest = dest;
@@ -159,7 +165,11 @@ private:
                 }
             }
         }
+
+        // TODO: Note that if we have a valid matching and we have flow that doesn't take the whole time,
+        // we idle when we complete...
         
+        // TODO: Modify so that it is inline with RotorNet paper
         // If no direct path available, check if we should wait or use VLB
         if (selected_dest == -1) {
             // For bulk traffic, wait for direct path
@@ -172,7 +182,7 @@ private:
         Packet& pkt = packets[packet_id];
         
         // For bulk traffic without intermediate set, wait for direct path
-        if (pkt.type == FlowType::BULK && pkt.intermediate_rack == -1 && 
+        if (pkt.type == FlowType::BULK && pkt.intermediate_rack == -1 && // TODO: isn't hasDirectPath always going to return false here?
             !topology.hasDirectPath(rack_id, selected_dest, current_time_us)) {
             
             double next_direct = topology.getNextDirectPathTime(

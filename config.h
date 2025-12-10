@@ -96,10 +96,12 @@ struct SimConfig {
         return (num_racks - 1 + num_switches - 1) / num_switches;
     }
     
+    // TODO: 
     double getSlotTime() const {
         return reconfig_delay_us / (1.0 - duty_cycle);
     }
     
+    // TODO: Edit to explicitly incorporate duty cycles vs reconfig
     double getCycleTime() const {
         return getNumMatchings() * getSlotTime();
     }
