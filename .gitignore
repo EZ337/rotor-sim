@@ -41,3 +41,4 @@
 *.dwo
 run_*_sim
 .vscode/*
+*.csv

@@ -46,6 +46,7 @@ private:
     std::map<uint64_t, Packet> packets;
     
     double current_time_us;
+    double end_time_us;
     uint64_t next_packet_id;
     
     // VOQ at each rack
@@ -257,7 +258,13 @@ private:
             
             // Schedule packet arrival at intermediate rack
             // It will be enqueued in nonlocal VOQ there
-            scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
+            if (arrival_time <= end_time_us)
+                scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
+            else
+                std::cout << "PacketId " << pkt.id << " from flow " << pkt.flow_id << " from srcRack " << pkt.src_rack 
+                    << " to dstRack " << pkt.final_dst << "'s arrival time " << arrival_time << " at currentRack " 
+                    << pkt.current_dst << " will exceed endtime " << end_time_us << "us. Not queuing arrival event"
+                    << std::endl;
         }
         
         // Start next transmission at the rack we just left
@@ -311,9 +318,18 @@ public:
         int event_count = 0;
         int progress_interval = event_queue.size() / 20; // 5% progress updates
         if (progress_interval == 0) progress_interval = 1000;
+
+        // Set the sim end time
+        end_time_us = config.sim_time_ms * 1000.0;
         
         while (!event_queue.empty()) {
             Event evt = event_queue.top();
+            if (evt.time_us > end_time_us) // Stop simulation
+            {
+                std::cout << "Simulation: Next event time: " << evt.time_us << "us, exceeds endTime: "
+                    << end_time_us <<"us. Stopping\n" << std::endl;
+                break; // stop simulation at configured time
+            }
             event_queue.pop();
             
             current_time_us = evt.time_us;

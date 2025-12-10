@@ -48,6 +48,9 @@ struct SimConfig {
         load_factor = 0.3;
         workload = WorkloadType::DATAMINING;
         random_seed = 1;
+        // save_flows = true;
+        flow_output_file="debugflows.csv"
+        flow_file="debugflows.csv"
 #endif
         
     }
