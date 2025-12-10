@@ -20,7 +20,7 @@ $(CONVERTER): $(CONVERTER_SRC)
 	$(CXX) $(CXXFLAGS) $(CONVERTER_SRC) -o $(CONVERTER)
 
 # Debug build
-debug: CXXFLAGS = -std=c++17 -g -Wall -Wextra
+debug: CXXFLAGS = -std=c++17 -g -Wall -Wextra -DDEBUG
 debug: all
 
 # Clean

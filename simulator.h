@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <random>
+#include <assert.h>
 #include "config.h"
 #include "flow.h"
 #include "topology.h"
@@ -19,6 +20,8 @@ enum class EventType {
     PACKET_ARRIVAL,
     PACKET_TRANSMISSION_COMPLETE
 };
+
+using VoqType = VirtualOutputQueues::VoqType;
 
 struct Event {
     EventType type;
@@ -71,11 +74,11 @@ private:
         std::uniform_int_distribution<int> rack_dist(0, config.num_racks - 1);
         int intermediate = -1;
         
-        // TODO: Need to verify logic against RotorNet paper
         // Use VLB for skewed traffic or when configured
         // For simplicity: always use VLB for low-latency, probabilistic for bulk
         if (flow.type == FlowType::LOW_LATENCY) {
             // Always use 2-hop for low-latency
+            assert(false && "LOW_LATENCY not used in this config");
             do {
                 intermediate = rack_dist(rng);
             } while (intermediate == flow.src_rack || intermediate == flow.dst_rack);
@@ -89,7 +92,8 @@ private:
             pkt.id = next_packet_id++;
             pkt.flow_id = flow_id;
             pkt.src_rack = flow.src_rack;
-            pkt.dst_rack = flow.dst_rack;
+            pkt.final_dst = flow.dst_rack;
+            pkt.current_dst = flow.src_host;
             pkt.src_host = flow.src_host;
             pkt.dst_host = flow.dst_host;
             pkt.size_bytes = std::min((uint64_t)config.mtu_bytes, remaining_bytes);
@@ -97,7 +101,9 @@ private:
             pkt.type = flow.type;
             pkt.dropped = false;
             pkt.hop_count = 0;
-            pkt.intermediate_rack = intermediate;
+            // Set randomly when we connect because we may have a direct connection insteda
+            // of 2Hop each time
+            // pkt.intermediate_rack = intermediate;
             pkt.at_intermediate = false;
             
             remaining_bytes -= pkt.size_bytes;
@@ -110,41 +116,49 @@ private:
         }
     }
     
-    void enqueuePacket(uint64_t packet_id, int rack_id) {
+    void enqueuePacket(uint64_t packet_id, int current_rack) 
+    {
         Packet& pkt = packets[packet_id];
         
-        // Determine destination for this hop
-        int next_hop_dest;
-        if (pkt.intermediate_rack >= 0 && !pkt.at_intermediate) {
-            // Going to intermediate rack (first hop of VLB)
-            next_hop_dest = pkt.intermediate_rack;
-        } else {
-            // Going to final destination
-            next_hop_dest = pkt.dst_rack;
-        }
+        // Determine next hop destination for THIS packet
+        // For now: always direct (no intermediate chosen yet)
+        int next_hop_dest = pkt.final_dst;
         
-        // Enqueue in appropriate VOQ
-        if (!rack_voqs.at(rack_id).enqueue(packet_id, next_hop_dest)) {
-            // Drop packet if queue is full
+        // Update packet's current_dst to match next hop
+        pkt.current_dst = next_hop_dest;
+        pkt.at_intermediate = false;  // still on hop 1
+        
+        // Choose VOQ based on whether packet has already been at intermediate
+        VirtualOutputQueues& voq = rack_voqs.at(current_rack);
+        
+        // For now, all packets use local VOQ (direct routing)
+        // Later: if pkt.at_intermediate, use nonlocal_voq
+        if (!voq.enqueue(packet_id, next_hop_dest, VirtualOutputQueues::VoqType::LOCAL)) {
+            // Drop if queue full
             pkt.dropped = true;
             stats.addDroppedPacket();
             return;
         }
         
         // If rack is not busy, start transmission
-        if (!rack_busy[rack_id]) {
-            startTransmission(rack_id);
-        }
+        if (!rack_busy[current_rack]) {
+            startTransmission(current_rack);
     }
+}
+
     
-    // TODO: Needs overhaul to support RotorLB: (1 vs 2 hop. We currently hold bulk flows)
-    // until we have a direct connection. This is NOT like RotorNet
     void startTransmission(int rack_id) {
+        // This rack's voqs
+        VirtualOutputQueues& myVoq = rack_voqs.at(rack_id);
         // Find a VOQ with packets that has a direct path available now
-        std::vector<int> nonempty_dests = rack_voqs.at(rack_id).getNonemptyDestinations();
+        std::vector<int> localDests = myVoq.getNonemptyLocalDestinations();
+        std::vector<int> nonLocalDests = myVoq.getNonemptyNonlocalDestinations();
+
+        // TODO: Prioritise nonLocal direct connections
+        // Then local direct connections
+        // Then non direct traffic
         
-        // TODO: Evaluate later: Should possibly still transmission completion event
-        if (nonempty_dests.empty()) {
+        if (localDests.empty() && nonLocalDests.empty()) {
             rack_busy[rack_id] = false;
             return;
         }
@@ -153,43 +167,42 @@ private:
         
         // Try to find a destination with direct path
         int selected_dest = -1;
-        uint64_t packet_id = 0; // Updated in dequeue call
-        
-        // for queues with data
-        for (int dest : nonempty_dests) {
-            // if we have a connection (there's only one connection per per cycle generally)
+        uint64_t packet_id = 0;
+        // TODO: Support nonlocal dests first
+        for (int dest : localDests) {
             if (topology.hasDirectPath(rack_id, dest, current_time_us)) {
-                if (rack_voqs.at(rack_id).dequeue(dest, packet_id)) {
+                if (myVoq.dequeue(dest, packet_id, VoqType::LOCAL)) {
                     selected_dest = dest;
                     break;
                 }
             }
         }
-
-        // TODO: Note that if we have a valid matching and we have flow that doesn't take the whole time,
-        // we idle when we complete...
         
-        // TODO: Modify so that it is inline with RotorNet paper
         // If no direct path available, check if we should wait or use VLB
         if (selected_dest == -1) {
             // For bulk traffic, wait for direct path
             // For low-latency, it should already have intermediate set
             // Just pick the first available destination
-            selected_dest = nonempty_dests[0];
-            rack_voqs.at(rack_id).dequeue(selected_dest, packet_id);
+            selected_dest = localDests[0];
+            myVoq.dequeue(selected_dest, packet_id, VoqType::LOCAL);
         }
         
         Packet& pkt = packets[packet_id];
         
-        // For bulk traffic without intermediate set, wait for direct path
-        if (pkt.type == FlowType::BULK && pkt.intermediate_rack == -1 && // TODO: isn't hasDirectPath always going to return false here?
+        if (pkt.type == FlowType::LOW_LATENCY)
+            assert(false && "LOW_LATENCY not used in this config");
+
+        // TODO: Edit. This is only direct connections
+        // For bulk traffic without direct connection, wait for direct path
+        if (pkt.type == FlowType::BULK && /*pkt.intermediate_rack == -1 && */ 
             !topology.hasDirectPath(rack_id, selected_dest, current_time_us)) {
             
             double next_direct = topology.getNextDirectPathTime(
                 rack_id, selected_dest, current_time_us);
             
             // Re-enqueue and schedule retry
-            rack_voqs.at(rack_id).enqueue(packet_id, selected_dest);
+            // TODO:Edit
+            myVoq.enqueue(packet_id, selected_dest, VoqType::LOCAL);
             scheduleEvent(EventType::PACKET_TRANSMISSION_COMPLETE, 
                         next_direct, packet_id);
             return;
@@ -209,49 +222,45 @@ private:
         Packet& pkt = packets[packet_id];
         int current_rack = pkt.src_rack;
         
+        // Increment hop count BEFORE checking destination
+        pkt.hop_count++;
+        
         // Add propagation delay
         double arrival_time = current_time_us + config.propagation_delay_us;
         
-        // Determine where packet is going
-        if (pkt.intermediate_rack >= 0 && !pkt.at_intermediate) {
-            // Packet is at intermediate rack for first time
-            if (pkt.src_rack == pkt.intermediate_rack) {
-                pkt.at_intermediate = true;
-                pkt.hop_count++;
-                // Forward to final destination
-                pkt.src_rack = pkt.intermediate_rack;
-                scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
-            } else {
-                // Still going to intermediate
-                pkt.hop_count++;
-                pkt.src_rack = pkt.intermediate_rack;
-                scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
-            }
-        } else {
-            // Going to final destination
-            if (pkt.src_rack == pkt.dst_rack) {
-                // Arrived!
-                pkt.arrival_time = arrival_time / 1000.0;
-                pkt.hop_count++;
-                total_bytes_transmitted += pkt.size_bytes;
-                
-                // Update flow
-                Flow& flow = flows[pkt.flow_id];
-                flow.packets_received++;
-                
-                if (flow.packets_received == flow.packet_ids.size()) {
-                    flow.completed = true;
-                    flow.completion_time = pkt.arrival_time;
-                }
-            } else {
-                // Forward to destination
-                pkt.hop_count++;
-                pkt.src_rack = pkt.dst_rack;
-                scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
+        // Determine packet's next location based on current_dst
+        int next_rack = pkt.current_dst;
+        
+        // RECEIVE PATH LOGIC:
+        // Case 1: Packet arrived at final destination
+        if (next_rack == pkt.final_dst) {
+            // Packet has reached its ultimate destination
+            pkt.arrival_time = arrival_time / 1000.0;
+            total_bytes_transmitted += pkt.size_bytes;
+            
+            // Update flow completion
+            Flow& flow = flows[pkt.flow_id];
+            flow.packets_received++;
+            
+            if (flow.packets_received == flow.packet_ids.size()) {
+                flow.completed = true;
+                flow.completion_time = pkt.arrival_time;
             }
         }
+        // Case 2: Packet arrived at intermediate rack (not final destination)
+        else {
+            // INVARIANT: Update packet state for second hop
+            // - current_dst becomes final_dst (packet now targets final destination)
+            // - hop_count was already incremented above
+            pkt.current_dst = pkt.final_dst;
+            pkt.src_rack = next_rack;  // Update src_rack for next transmission
+            
+            // Schedule packet arrival at intermediate rack
+            // It will be enqueued in nonlocal VOQ there
+            scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
+        }
         
-        // Start next transmission at this rack
+        // Start next transmission at the rack we just left
         rack_next_free_time[current_rack] = current_time_us;
         startTransmission(current_rack);
     }

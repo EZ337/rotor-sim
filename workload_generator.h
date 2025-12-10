@@ -141,7 +141,10 @@ public:
             flow.size_bytes = sampleFlowSize();
             
             // Classify as bulk or low-latency (15 MB threshold per Opera paper)
-            flow.type = (flow.size_bytes >= 15e6) ? FlowType::BULK : FlowType::LOW_LATENCY;
+            // flow.type = (flow.size_bytes >= 15e6) ? FlowType::BULK : FlowType::LOW_LATENCY;
+            // all flow types are Bulk. We are only simulating RotorNet. low-latency packets are sent over packet switch
+            // which is not rotornet
+            flow.type = FlowType::BULK;
             
             flows.push_back(flow);
             

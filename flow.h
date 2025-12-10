@@ -14,7 +14,6 @@ struct Packet {
     uint64_t id;
     uint64_t flow_id;
     int src_rack;
-    int dst_rack;
     int src_host;
     int dst_host;
     int size_bytes;
@@ -23,17 +22,28 @@ struct Packet {
     double arrival_time;
     FlowType type;
     bool dropped;
-    int hop_count;
+    bool at_intermediate;
     
-    // For 2-hop VLB
-    int intermediate_rack;  // -1 means direct path
-    bool at_intermediate;   // true if currently at intermediate rack
+    // Routing metadata for 1-hop and 2-hop paths
+    // INVARIANT: final_dst never changes after packet creation
+    int final_dst;      // Ultimate destination rack (never changes)
+    
+    // INVARIANT: current_dst is the next-hop target for this packet
+    // - On first hop: current_dst = intermediate rack (for VLB) or final_dst (for direct)
+    // - On second hop: current_dst = final_dst
+    int current_dst;    // Next hop destination for this packet
+    
+    // INVARIANT: hop_count tracks routing progress
+    // - 0: Just created, not yet transmitted
+    // - 1: First hop complete (at intermediate or final)
+    // - 2: Second hop complete (only for 2-hop paths)
+    int hop_count;      // 0=new, 1=after first hop, 2=delivered
 };
 
 struct Flow {
     uint64_t id;
     int src_rack;
-    int dst_rack;
+    int dst_rack;  // This is the final destination
     int src_host;
     int dst_host;
     uint64_t size_bytes;
@@ -51,6 +61,7 @@ struct Flow {
              type(FlowType::BULK), packets_sent(0), packets_received(0),
              completed(false) {}
     
+    // Flow completion time accounts for all hops (1 or 2)
     double getFCT() const {
         if (!completed) return -1.0;
         return completion_time - start_time;

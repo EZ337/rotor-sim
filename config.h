@@ -39,6 +39,17 @@ struct SimConfig {
     
     void setDefaults() {
         // Already set above
+#ifdef DEBUG
+        num_racks = 8;
+        hosts_per_rack = 8;
+        link_rate_gbps = 10;
+        mtu_bytes = 1500;
+        sim_time_ms = 100;
+        load_factor = 0.3;
+        workload = WorkloadType::DATAMINING;
+        random_seed = 1;
+#endif
+        
     }
     
     void loadFromFile(const std::string& filename) {
@@ -93,15 +104,13 @@ struct SimConfig {
     }
     
     int getNumMatchings() const {
-        return (num_racks - 1 + num_switches - 1) / num_switches;
+        return static_cast<int>(std::ceil(static_cast<double>(num_racks - 1) / num_switches));
     }
     
-    // TODO: 
     double getSlotTime() const {
         return reconfig_delay_us / (1.0 - duty_cycle);
     }
     
-    // TODO: Edit to explicitly incorporate duty cycles vs reconfig
     double getCycleTime() const {
         return getNumMatchings() * getSlotTime();
     }
