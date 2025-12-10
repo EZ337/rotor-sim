@@ -1,0 +1,194 @@
+# RotorNet Packet-Level Simulator
+
+A lightweight, modular packet-level simulator for RotorNet datacenter networks, based on the SIGCOMM 2017 paper "RotorNet: A Scalable, Low-complexity, Optical Datacenter Network."
+
+## Features
+
+- **Flow Generation**: Implements published flow-size distributions from:
+  - Microsoft Datamining workload (VL2 paper)
+  - Microsoft Websearch workload (DCTCP paper)
+  - Facebook Hadoop workload
+  
+- **RotorNet Topology**: 
+  - Automatic generation of disjoint matchings
+  - Cyclic reconfiguration with configurable switching times
+  - Direct and indirect path routing
+  
+- **Transport**:
+  - Bulk traffic waits for direct paths (low bandwidth tax)
+  - Low-latency traffic uses indirect paths immediately
+  - Configurable flow size threshold (default: 15 MB)
+  
+- **Statistics**:
+  - Flow completion times (mean, median, percentiles)
+  - Separate stats for bulk and low-latency flows
+  - Throughput measurement
+  - Packet drops
+
+## File Structure
+
+```
+main.cpp                 # Entry point
+config.h                 # Configuration management
+flow.h                   # Flow and packet data structures
+workload_generator.h     # Flow generation based on published distributions
+topology.h               # RotorNet topology and matching management
+simulator.h              # Main discrete-event simulation engine
+stats.h                  # Statistics collection and reporting
+Makefile                 # Build system
+README.md                # This file
+```
+
+## Building
+
+```bash
+# Standard optimized build
+make
+
+# Debug build with symbols
+make debug
+
+# Clean
+make clean
+```
+
+## Usage
+
+### Default Configuration
+
+```bash
+./rotornet_sim
+```
+
+### Custom Configuration File
+
+Create a configuration file (e.g., `config.txt`):
+
+```
+num_racks 32
+num_switches 8
+hosts_per_rack 32
+link_rate_gbps 10.0
+load_factor 0.30
+sim_time_ms 500.0
+random_seed 42
+workload datamining
+```
+
+Run with:
+```bash
+./rotornet_sim config.txt
+```
+
+## Configuration Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `num_racks` | Number of ToR racks | 16 |
+| `num_switches` | Number of circuit switches | 4 |
+| `hosts_per_rack` | Hosts per rack | 32 |
+| `link_rate_gbps` | Link bandwidth (Gb/s) | 10.0 |
+| `load_factor` | Network load (0.0-1.0) | 0.25 |
+| `sim_time_ms` | Simulation duration (ms) | 1000.0 |
+| `random_seed` | Random seed | 42 |
+| `workload` | Workload type: datamining, websearch, hadoop | datamining |
+| `reconfig_delay_us` | Switch reconfiguration time (μs) | 20.0 |
+| `duty_cycle` | Fraction of time switches are active | 0.9 |
+| `queue_size_pkts` | Queue size in packets | 100 |
+
+## Output
+
+The simulator produces:
+1. **Console output**: Configuration, progress updates, and summary statistics
+2. **CSV file** (`results.csv`): Key metrics for analysis
+
+### Example Output
+
+```
+RotorNet Packet Simulator
+=========================
+Configuration:
+  Racks: 16
+  Switches: 4
+  Hosts per rack: 32
+  Link rate: 10 Gb/s
+  Load factor: 0.25
+  Simulation time: 1000 ms
+  Workload: Datamining
+
+Topology initialized:
+  Matchings per switch: 4
+  Slot time: 200.000 μs
+  Cycle time: 3200.000 μs
+
+Generated 1247 flows
+Running simulation...
+  Progress: 25.0%
+  Progress: 50.0%
+  Progress: 75.0%
+  Progress: 100.0%
+Simulation complete. Collecting statistics...
+
+========== Simulation Results ==========
+
+Flow Statistics:
+  Total flows: 1247
+  Completed flows: 1198 (96.1%)
+  Dropped packets: 23
+
+Flow Completion Times (all flows):
+  Mean: 45.231 ms
+  Median: 12.456 ms
+  95th: 156.789 ms
+  99th: 289.123 ms
+  Max: 432.567 ms
+
+Low-latency FCTs:
+  Count: 1089
+  Mean: 15.678 ms
+  99th: 78.234 ms
+
+Bulk FCTs:
+  Count: 109
+  Mean: 245.123 ms
+  99th: 567.890 ms
+
+Throughput:
+  Average: 42.5 Gb/s
+
+========================================
+```
+
+## Design Notes
+
+### Simplifications vs. Full Implementation
+
+This simulator makes several simplifying assumptions compared to a production implementation:
+
+1. **Single queue per rack**: Real implementations would have per-flow or per-destination queuing
+2. **Simplified routing**: Direct paths for bulk, indirect for low-latency (no sophisticated VLB)
+3. **No congestion control**: Packets simply queue or drop
+4. **Perfect synchronization**: No modeling of clock drift or synchronization overhead
+5. **Single-hop indirect paths**: Real RotorNet uses 2-hop VLB for skewed traffic
+
+### Extending the Simulator
+
+To add features:
+
+- **Multiple hops**: Modify `handlePacketTransmissionComplete()` to implement proper multi-hop routing
+- **Congestion control**: Add window-based flow control in flow management
+- **Priority queuing**: Separate queues for bulk and low-latency in `enqueuePacket()`
+- **Link failures**: Add failure events and topology updates
+- **More workloads**: Add new CDFs in `WorkloadGenerator::getCDFForWorkload()`
+
+## References
+
+1. Mellette et al., "RotorNet: A Scalable, Low-complexity, Optical Datacenter Network," SIGCOMM 2017
+2. Mellette et al., "Expanding across time to deliver bandwidth efficiency and low latency (Opera)," NSDI 2020
+3. Greenberg et al., "VL2: A Scalable and Flexible Data Center Network," SIGCOMM 2009
+4. Alizadeh et al., "Data Center TCP (DCTCP)," SIGCOMM 2010
+5. Roy et al., "Inside the Social Network's (Datacenter) Network," SIGCOMM 2015
+
+## License
+
+This simulator is provided for research and educational purposes.

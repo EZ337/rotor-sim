@@ -1,0 +1,4 @@
+*.out
+*.exe
+.vscode/*
+run_*_simulator
