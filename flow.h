@@ -24,6 +24,10 @@ struct Packet {
     FlowType type;
     bool dropped;
     int hop_count;
+    
+    // For 2-hop VLB
+    int intermediate_rack;  // -1 means direct path
+    bool at_intermediate;   // true if currently at intermediate rack
 };
 
 struct Flow {

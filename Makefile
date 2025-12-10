@@ -2,23 +2,30 @@
 
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -Wall -Wextra
-TARGET = run_rotornet_simulator
+TARGET = run_rotornet_sim
+CONVERTER = flow_converter
 
 # Source and header files
 SOURCES = main.cpp
-HEADERS = config.h flow.h workload_generator.h topology.h stats.h simulator.h
+HEADERS = config.h flow.h workload_generator.h topology.h voq.h stats.h simulator.h
+CONVERTER_SRC = flow_converter.cpp
 
-# Build target
+# Build targets
+all: $(TARGET) #$(CONVERTER)
+
 $(TARGET): $(SOURCES) $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET)
 
+$(CONVERTER): $(CONVERTER_SRC)
+	$(CXX) $(CXXFLAGS) $(CONVERTER_SRC) -o $(CONVERTER)
+
 # Debug build
 debug: CXXFLAGS = -std=c++17 -g -Wall -Wextra
-debug: $(TARGET)
+debug: all
 
 # Clean
 clean:
-	rm -f $(TARGET) *.o results.csv
+	rm -f $(TARGET) $(CONVERTER) *.o results.csv flows.csv
 
 # Run with default config
 run: $(TARGET)
@@ -28,4 +35,4 @@ run: $(TARGET)
 run-config: $(TARGET)
 	./$(TARGET) config.txt
 
-.PHONY: clean run run-config debug
+.PHONY: clean run run-config debug all

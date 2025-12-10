@@ -30,6 +30,9 @@ struct SimConfig {
     double load_factor = 0.25; // Network load (0.0 to 1.0)
     double sim_time_ms = 1000.0;
     int random_seed = 42;
+    std::string flow_file = ""; // If set, load flows from file instead of generating
+    bool save_flows = false;    // If true, save generated flows to file
+    std::string flow_output_file = "flows.csv";
     
     // Transport parameters
     int queue_size_pkts = 100;
@@ -60,6 +63,13 @@ struct SimConfig {
                 else if (wl == "websearch") workload = WorkloadType::WEBSEARCH;
                 else if (wl == "hadoop") workload = WorkloadType::HADOOP;
             }
+            else if (key == "flow_file") file >> flow_file;
+            else if (key == "save_flows") {
+                std::string val;
+                file >> val;
+                save_flows = (val == "true" || val == "1");
+            }
+            else if (key == "flow_output_file") file >> flow_output_file;
         }
     }
     

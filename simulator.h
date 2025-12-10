@@ -5,11 +5,13 @@
 #include <queue>
 #include <map>
 #include <memory>
+#include <random>
 #include "config.h"
 #include "flow.h"
 #include "topology.h"
 #include "workload_generator.h"
 #include "stats.h"
+#include "voq.h"
 
 // Event types for discrete event simulation
 enum class EventType {
@@ -33,6 +35,7 @@ private:
     const SimConfig& config;
     RotorTopology topology;
     Statistics stats;
+    std::mt19937 rng;
     
     std::priority_queue<Event, std::vector<Event>, std::greater<Event>> event_queue;
     
@@ -42,8 +45,8 @@ private:
     double current_time_us;
     uint64_t next_packet_id;
     
-    // Queue at each rack (simplified - single queue per rack)
-    std::map<int, std::queue<uint64_t>> rack_queues;
+    // VOQ at each rack
+    std::map<int, VirtualOutputQueues> rack_voqs;
     std::map<int, bool> rack_busy; // Is rack currently transmitting?
     std::map<int, double> rack_next_free_time;
     
@@ -64,6 +67,22 @@ private:
         int num_packets = flow.getNumPackets(config.mtu_bytes);
         uint64_t remaining_bytes = flow.size_bytes;
         
+        // For 2-hop VLB: randomly select intermediate rack for this flow
+        std::uniform_int_distribution<int> rack_dist(0, config.num_racks - 1);
+        int intermediate = -1;
+        
+        // Use VLB for skewed traffic or when configured
+        // For simplicity: always use VLB for low-latency, probabilistic for bulk
+        if (flow.type == FlowType::LOW_LATENCY) {
+            // Always use 2-hop for low-latency
+            do {
+                intermediate = rack_dist(rng);
+            } while (intermediate == flow.src_rack || intermediate == flow.dst_rack);
+        } else {
+            // Bulk: try direct first, use VLB if needed (decision made per packet based on queue state)
+            intermediate = -1; // Will be set per-packet if needed
+        }
+        
         for (int i = 0; i < num_packets; i++) {
             Packet pkt;
             pkt.id = next_packet_id++;
@@ -77,6 +96,8 @@ private:
             pkt.type = flow.type;
             pkt.dropped = false;
             pkt.hop_count = 0;
+            pkt.intermediate_rack = intermediate;
+            pkt.at_intermediate = false;
             
             remaining_bytes -= pkt.size_bytes;
             
@@ -89,15 +110,25 @@ private:
     }
     
     void enqueuePacket(uint64_t packet_id, int rack_id) {
-        // Check queue capacity
-        if (rack_queues[rack_id].size() >= config.queue_size_pkts) {
-            // Drop packet
-            packets[packet_id].dropped = true;
+        Packet& pkt = packets[packet_id];
+        
+        // Determine destination for this hop
+        int next_hop_dest;
+        if (pkt.intermediate_rack >= 0 && !pkt.at_intermediate) {
+            // Going to intermediate rack (first hop of VLB)
+            next_hop_dest = pkt.intermediate_rack;
+        } else {
+            // Going to final destination
+            next_hop_dest = pkt.dst_rack;
+        }
+        
+        // Enqueue in appropriate VOQ
+        if (!rack_voqs.at(rack_id).enqueue(packet_id, next_hop_dest)) {
+            // Drop packet if queue is full
+            pkt.dropped = true;
             stats.addDroppedPacket();
             return;
         }
-        
-        rack_queues[rack_id].push(packet_id);
         
         // If rack is not busy, start transmission
         if (!rack_busy[rack_id]) {
@@ -106,28 +137,52 @@ private:
     }
     
     void startTransmission(int rack_id) {
-        if (rack_queues[rack_id].empty()) {
+        // Find a VOQ with packets that has a direct path available now
+        std::vector<int> nonempty_dests = rack_voqs.at(rack_id).getNonemptyDestinations();
+        
+        if (nonempty_dests.empty()) {
             rack_busy[rack_id] = false;
             return;
         }
         
         rack_busy[rack_id] = true;
-        uint64_t packet_id = rack_queues[rack_id].front();
-        rack_queues[rack_id].pop();
+        
+        // Try to find a destination with direct path
+        int selected_dest = -1;
+        uint64_t packet_id = 0;
+        
+        for (int dest : nonempty_dests) {
+            if (topology.hasDirectPath(rack_id, dest, current_time_us)) {
+                if (rack_voqs.at(rack_id).dequeue(dest, packet_id)) {
+                    selected_dest = dest;
+                    break;
+                }
+            }
+        }
+        
+        // If no direct path available, check if we should wait or use VLB
+        if (selected_dest == -1) {
+            // For bulk traffic, wait for direct path
+            // For low-latency, it should already have intermediate set
+            // Just pick the first available destination
+            selected_dest = nonempty_dests[0];
+            rack_voqs.at(rack_id).dequeue(selected_dest, packet_id);
+        }
         
         Packet& pkt = packets[packet_id];
         
-        // For bulk traffic, wait for direct path
-        if (pkt.type == FlowType::BULK && pkt.hop_count == 0) {
-            double next_direct = topology.getNextDirectPathTime(
-                pkt.src_rack, pkt.dst_rack, current_time_us);
+        // For bulk traffic without intermediate set, wait for direct path
+        if (pkt.type == FlowType::BULK && pkt.intermediate_rack == -1 && 
+            !topology.hasDirectPath(rack_id, selected_dest, current_time_us)) {
             
-            if (next_direct > current_time_us) {
-                // Wait for direct path
-                scheduleEvent(EventType::PACKET_TRANSMISSION_COMPLETE, 
-                            next_direct, packet_id);
-                return;
-            }
+            double next_direct = topology.getNextDirectPathTime(
+                rack_id, selected_dest, current_time_us);
+            
+            // Re-enqueue and schedule retry
+            rack_voqs.at(rack_id).enqueue(packet_id, selected_dest);
+            scheduleEvent(EventType::PACKET_TRANSMISSION_COMPLETE, 
+                        next_direct, packet_id);
+            return;
         }
         
         // Calculate transmission time
@@ -142,18 +197,32 @@ private:
     
     void handlePacketTransmissionComplete(uint64_t packet_id) {
         Packet& pkt = packets[packet_id];
-        pkt.hop_count++;
+        int current_rack = pkt.src_rack;
         
         // Add propagation delay
         double arrival_time = current_time_us + config.propagation_delay_us;
         
-        if (pkt.src_rack == pkt.dst_rack || pkt.hop_count > 5) {
-            // Arrived at destination (or too many hops - drop)
-            if (pkt.hop_count > 5) {
-                pkt.dropped = true;
-                stats.addDroppedPacket();
+        // Determine where packet is going
+        if (pkt.intermediate_rack >= 0 && !pkt.at_intermediate) {
+            // Packet is at intermediate rack for first time
+            if (pkt.src_rack == pkt.intermediate_rack) {
+                pkt.at_intermediate = true;
+                pkt.hop_count++;
+                // Forward to final destination
+                pkt.src_rack = pkt.intermediate_rack;
+                scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
             } else {
+                // Still going to intermediate
+                pkt.hop_count++;
+                pkt.src_rack = pkt.intermediate_rack;
+                scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
+            }
+        } else {
+            // Going to final destination
+            if (pkt.src_rack == pkt.dst_rack) {
+                // Arrived!
                 pkt.arrival_time = arrival_time / 1000.0;
+                pkt.hop_count++;
                 total_bytes_transmitted += pkt.size_bytes;
                 
                 // Update flow
@@ -164,17 +233,17 @@ private:
                     flow.completed = true;
                     flow.completion_time = pkt.arrival_time;
                 }
+            } else {
+                // Forward to destination
+                pkt.hop_count++;
+                pkt.src_rack = pkt.dst_rack;
+                scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
             }
-        } else {
-            // Forward packet - update source rack for next hop
-            // For simplicity, use single-hop forwarding to destination
-            pkt.src_rack = pkt.dst_rack;
-            scheduleEvent(EventType::PACKET_ARRIVAL, arrival_time, packet_id);
         }
         
         // Start next transmission at this rack
-        rack_next_free_time[pkt.src_rack] = current_time_us;
-        startTransmission(pkt.src_rack);
+        rack_next_free_time[current_rack] = current_time_us;
+        startTransmission(current_rack);
     }
     
     void handlePacketArrival(uint64_t packet_id) {
@@ -187,8 +256,11 @@ public:
         : config(cfg), topology(cfg), current_time_us(0), 
           next_packet_id(0), total_bytes_transmitted(0) {
         
-        // Initialize rack state
+        rng.seed(cfg.random_seed + 1000); // Different seed from workload gen
+        
+        // Initialize rack state and VOQs
         for (int i = 0; i < config.num_racks; i++) {
+            rack_voqs.emplace(i, VirtualOutputQueues(i, config.num_racks, config.queue_size_pkts));
             rack_busy[i] = false;
             rack_next_free_time[i] = 0.0;
         }
@@ -197,7 +269,17 @@ public:
     void run() {
         std::cout << "Generating workload..." << std::endl;
         WorkloadGenerator wg(config);
-        std::vector<Flow> flow_list = wg.generateFlows();
+        std::vector<Flow> flow_list;
+        
+        // Load or generate flows
+        if (!config.flow_file.empty()) {
+            flow_list = wg.loadFlowsFromFile(config.flow_file);
+        } else {
+            flow_list = wg.generateFlows();
+            if (config.save_flows) {
+                wg.saveFlowsToFile(flow_list, config.flow_output_file);
+            }
+        }
         
         // Add flows to map and schedule arrivals
         for (auto& flow : flow_list) {

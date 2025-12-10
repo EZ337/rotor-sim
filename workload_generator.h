@@ -5,6 +5,7 @@
 #include <random>
 #include <vector>
 #include <cmath>
+#include <sstream>
 #include "flow.h"
 #include "config.h"
 
@@ -149,6 +150,75 @@ public:
         }
         
         std::cout << "Generated " << flows.size() << " flows" << std::endl;
+        
+        return flows;
+    }
+    
+    void saveFlowsToFile(const std::vector<Flow>& flows, const std::string& filename) {
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            throw std::runtime_error("Cannot open file for writing: " + filename);
+        }
+        
+        // Write header
+        file << "flow_id,src_rack,dst_rack,src_host,dst_host,size_bytes,start_time_ms,flow_type\n";
+        
+        // Write flows
+        for (const auto& flow : flows) {
+            file << flow.id << ","
+                 << flow.src_rack << ","
+                 << flow.dst_rack << ","
+                 << flow.src_host << ","
+                 << flow.dst_host << ","
+                 << flow.size_bytes << ","
+                 << flow.start_time << ","
+                 << (flow.type == FlowType::BULK ? "bulk" : "low_latency")
+                 << "\n";
+        }
+        
+        file.close();
+        std::cout << "Saved " << flows.size() << " flows to " << filename << std::endl;
+    }
+    
+    std::vector<Flow> loadFlowsFromFile(const std::string& filename) {
+        std::vector<Flow> flows;
+        std::ifstream file(filename);
+        
+        if (!file.is_open()) {
+            throw std::runtime_error("Cannot open file for reading: " + filename);
+        }
+        
+        std::string line;
+        std::getline(file, line); // Skip header
+        
+        while (std::getline(file, line)) {
+            std::stringstream ss(line);
+            std::string field;
+            Flow flow;
+            
+            std::getline(ss, field, ','); flow.id = std::stoull(field);
+            std::getline(ss, field, ','); flow.src_rack = std::stoi(field);
+            std::getline(ss, field, ','); flow.dst_rack = std::stoi(field);
+            std::getline(ss, field, ','); flow.src_host = std::stoi(field);
+            std::getline(ss, field, ','); flow.dst_host = std::stoi(field);
+            std::getline(ss, field, ','); flow.size_bytes = std::stoull(field);
+            std::getline(ss, field, ','); flow.start_time = std::stod(field);
+            std::getline(ss, field, ',');
+            flow.type = (field == "bulk") ? FlowType::BULK : FlowType::LOW_LATENCY;
+            
+            flow.completed = false;
+            flow.packets_sent = 0;
+            flow.packets_received = 0;
+            
+            flows.push_back(flow);
+            
+            if (flow.id >= next_flow_id) {
+                next_flow_id = flow.id + 1;
+            }
+        }
+        
+        file.close();
+        std::cout << "Loaded " << flows.size() << " flows from " << filename << std::endl;
         
         return flows;
     }

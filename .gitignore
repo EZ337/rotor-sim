@@ -1,4 +1,4 @@
 *.out
 *.exe
 .vscode/*
-run_*_simulator
+run_*_sim
