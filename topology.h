@@ -77,16 +77,24 @@ public:
     int getConnectedRack(int src_rack, int switch_id, double time_us) {
         double time_in_cycle = fmod(time_us, cycle_time_us);
         int matching_idx = static_cast<int>(time_in_cycle / slot_time_us) % num_matchings;
-        
+
+        double time_in_slot = fmod(time_in_cycle, slot_time_us);
+        if (time_in_slot < config.reconfig_delay_us) {
+            return -1; // link down during reconfig
+        }
+
         if (switch_id >= 0 && switch_id < matchings.size() &&
             matching_idx >= 0 && matching_idx < matchings[switch_id].size()) {
             return matchings[switch_id][matching_idx][src_rack];
         }
-        
-        return -1; // Invalid
+
+        return -1;
     }
+
+
     
     // Check if direct path exists from src to dst at given time
+    // We are assuming no reconfig delay
     bool hasDirectPath(int src_rack, int dst_rack, double time_us) {
         for (int s = 0; s < config.num_switches; s++) {
             if (getConnectedRack(src_rack, s, time_us) == dst_rack) {

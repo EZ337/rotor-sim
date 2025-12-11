@@ -9,9 +9,25 @@ int main(int argc, char* argv[]) {
     try {
         // Load configuration
         SimConfig config;
-        if (argc > 1) {
-            config.loadFromFile(argv[1]);
+        std::string flowCsv = "";
+        std::string saveName = "results.csv";
+        
+        // Parse command-line arguments
+        for (int i = 1; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "-f" && i + 1 < argc) {
+                flowCsv = argv[++i];
+            } else if (arg == "-o" && i + 1 < argc) {
+                saveName = argv[++i];
+            }
+        }
+        
+        // Load configuration from file or use defaults
+        if (!flowCsv.empty()) {
+            config.loadFromFile(flowCsv);
         } else {
+            std::cout << "Usage: " << argv[0] << " -f [flowcsv] -o [outputCsv]" << std::endl;
+            std::cout << "Using defaults" << std::endl;
             config.setDefaults();
         }
         
@@ -26,7 +42,7 @@ int main(int argc, char* argv[]) {
         // Print statistics
         Statistics stats = sim.getStatistics();
         stats.print();
-        stats.saveToFile("results.csv");
+        stats.saveToFile(saveName);
         
         return 0;
     } catch (const std::exception& e) {
