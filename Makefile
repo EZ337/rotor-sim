@@ -6,7 +6,7 @@ TARGET = run_rotornet_sim
 CONVERTER = flow_converter
 
 # Source and header files
-SOURCES = main.cpp
+SOURCES = main.cpp simulator.cpp
 HEADERS = config.h flow.h workload_generator.h topology.h voq.h stats.h simulator.h
 CONVERTER_SRC = flow_converter.cpp
 

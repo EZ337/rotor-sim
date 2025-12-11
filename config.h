@@ -20,6 +20,7 @@ struct SimConfig {
     double link_rate_gbps = 10.0;
     int mtu_bytes = 1500;
     double propagation_delay_us = 0.5;
+    int queue_threshold = 3;
     
     // RotorNet specific
     double reconfig_delay_us = 20.0;

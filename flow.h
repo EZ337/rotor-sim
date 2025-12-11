@@ -22,7 +22,7 @@ struct Packet {
     double arrival_time;
     FlowType type;
     bool dropped;
-    bool at_intermediate;
+    int current_rack;
     
     // Routing metadata for 1-hop and 2-hop paths
     // INVARIANT: final_dst never changes after packet creation
