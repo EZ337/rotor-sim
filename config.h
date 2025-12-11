@@ -20,7 +20,7 @@ struct SimConfig {
     double link_rate_gbps = 10.0;
     int mtu_bytes = 1500;
     double propagation_delay_us = 0.5;
-    int queue_threshold = 3;
+    int queue_threshold = 4;
     
     // RotorNet specific
     double reconfig_delay_us = 20.0;
@@ -42,11 +42,13 @@ struct SimConfig {
         // Already set above
 #ifdef DEBUG
         num_racks = 8;
+        num_switches = 4;
         hosts_per_rack = 8;
         link_rate_gbps = 10;
         mtu_bytes = 1500;
         sim_time_ms = 100;
         load_factor = 0.3;
+        queue_threshold = 3;
         workload = WorkloadType::DATAMINING;
         random_seed = 1;
         // save_flows = true;
@@ -84,7 +86,10 @@ struct SimConfig {
                 file >> val;
                 save_flows = (val == "true" || val == "1");
             }
+            else if (key == "queue_threshold") file >> queue_threshold;
             else if (key == "flow_output_file") file >> flow_output_file;
+            else
+                std::cout << "Unknown key in config file: " << key << std::endl;
         }
     }
     
